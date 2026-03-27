@@ -1,166 +1,150 @@
 import streamlit as st
-import random
+import pandas as pd
 import math
-import plotly.graph_objects as go
 
-st.set_page_config(layout="wide")
+st.set_page_config(page_title="Smart Storage Dashboard", layout="wide")
 
-st.title("📦 IoT Smart Storage Digital Twin")
+st.title("Smart Storage Dashboard")
+st.write("IoT-inspired unit tracking prototype for storage visibility and packing support")
 
-GRID_SIZE = 5
-NUM_UNITS = 12
-
-# ---------------------------
-# INIT STATE
-# ---------------------------
 if "units" not in st.session_state:
-    st.session_state.units = [
-        {
-            "id": f"U{i+1}",
-            "x": random.randint(0, GRID_SIZE-1),
-            "y": random.randint(0, GRID_SIZE-1),
-            "status": "stored"
-        }
-        for i in range(NUM_UNITS)
-    ]
+    st.session_state.units = pd.DataFrame([
+        {"unit_id": "U001", "metal": "Steel",  "shelf": "A1", "status": "Stored",  "order_id": "O100"},
+        {"unit_id": "U002", "metal": "Copper", "shelf": "A2", "status": "Stored",  "order_id": "O100"},
+        {"unit_id": "U003", "metal": "Steel",  "shelf": "B1", "status": "Packed",  "order_id": "O101"},
+        {"unit_id": "U004", "metal": "Brass",  "shelf": "C2", "status": "Missing", "order_id": "O102"},
+        {"unit_id": "U005", "metal": "Steel",  "shelf": "B3", "status": "Stored",  "order_id": "O103"},
+    ])
 
-if "order_units" not in st.session_state:
-    st.session_state.order_units = []
+shelf_coords = {
+    "A1": (0, 0), "A2": (0, 1), "A3": (0, 2),
+    "B1": (1, 0), "B2": (1, 1), "B3": (1, 2),
+    "C1": (2, 0), "C2": (2, 1), "C3": (2, 2)
+}
 
-# ---------------------------
-# SIDEBAR CONTROLS
-# ---------------------------
-st.sidebar.header("Controls")
+st.sidebar.header("Simulated Gateway Update")
 
-if st.sidebar.button("🔄 Move Units"):
-    for u in st.session_state.units:
-        u["x"] = random.randint(0, GRID_SIZE-1)
-        u["y"] = random.randint(0, GRID_SIZE-1)
-        u["status"] = "stored"
+unit_id = st.sidebar.text_input("Unit ID", "U001")
+metal = st.sidebar.selectbox("Metal", ["Steel", "Copper", "Brass", "Aluminum"])
+shelf = st.sidebar.selectbox("Shelf", list(shelf_coords.keys()))
+status = st.sidebar.selectbox("Status", ["Stored", "Packed", "Missing"])
 
-if st.sidebar.button("📦 Generate Order"):
-    st.session_state.order_units = random.sample(st.session_state.units, 4)
+if st.sidebar.button("Update Unit"):
+    df = st.session_state.units.copy()
 
-if st.sidebar.button("🔁 Reset"):
-    st.session_state.units = [
-        {
-            "id": f"U{i+1}",
-            "x": random.randint(0, GRID_SIZE-1),
-            "y": random.randint(0, GRID_SIZE-1),
-            "status": "stored"
-        }
-        for i in range(NUM_UNITS)
-    ]
-    st.session_state.order_units = []
+    if unit_id in df["unit_id"].values:
+        df.loc[df["unit_id"] == unit_id, ["metal", "shelf", "status"]] = [metal, shelf, status]
+    else:
+        new_row = pd.DataFrame([{
+            "unit_id": unit_id,
+            "metal": metal,
+            "shelf": shelf,
+            "status": status,
+            "order_id": "O999"
+        }])
+        df = pd.concat([df, new_row], ignore_index=True)
 
-# ---------------------------
-# DUPLICATE DETECTION
-# ---------------------------
-positions = [(u["x"], u["y"]) for u in st.session_state.units]
-duplicates = set([p for p in positions if positions.count(p) > 1])
+    st.session_state.units = df
+    st.success(f"Updated {unit_id}")
 
-for u in st.session_state.units:
-    if (u["x"], u["y"]) in duplicates:
-        u["status"] = "error"
+df = st.session_state.units.copy()
 
-# ---------------------------
-# MISSING / SHORTAGE
-# ---------------------------
-expected_units = [f"U{i+1}" for i in range(NUM_UNITS)]
-detected_ids = [u["id"] for u in st.session_state.units]
-missing_units = [u for u in expected_units if u not in detected_ids]
+total_units = len(df)
+packed_units = len(df[df["status"] == "Packed"])
+missing_units = len(df[df["status"] == "Missing"])
+stored_units = len(df[df["status"] == "Stored"])
 
-# ---------------------------
-# SHORTEST PATH
-# ---------------------------
-def distance(a, b):
-    return math.sqrt((a["x"]-b["x"])**2 + (a["y"]-b["y"])**2)
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Total Units", total_units)
+col2.metric("Stored", stored_units)
+col3.metric("Packed", packed_units)
+col4.metric("Missing", missing_units)
 
-path = []
-if st.session_state.order_units:
-    start = {"x": 0, "y": 0}
-    remaining = st.session_state.order_units.copy()
-    current = start
+st.divider()
 
-    while remaining:
-        next_unit = min(remaining, key=lambda u: distance(current, u))
-        path.append(next_unit)
-        current = next_unit
-        remaining.remove(next_unit)
+st.subheader("Current Unit Status")
+st.dataframe(df, use_container_width=True)
 
-# ---------------------------
-# PLOT GRID
-# ---------------------------
-fig = go.Figure()
+st.divider()
 
-# Draw grid
-for x in range(GRID_SIZE):
-    for y in range(GRID_SIZE):
-        fig.add_trace(go.Scatter(
-            x=[x], y=[y],
-            mode='markers',
-            marker=dict(size=8, color='lightgrey'),
-            showlegend=False
-        ))
+st.subheader("Alerts")
 
-# Draw units
-for u in st.session_state.units:
-    color = "green"
+duplicate_units = df[df.duplicated(subset=["unit_id"], keep=False)]
 
-    if u["status"] == "error":
-        color = "red"
-    elif u in st.session_state.order_units:
-        color = "blue"
+if len(duplicate_units) > 0:
+    st.error("Duplicate unit IDs detected")
+    st.dataframe(duplicate_units, use_container_width=True)
+else:
+    st.success("No duplicate unit IDs detected")
 
-    fig.add_trace(go.Scatter(
-        x=[u["x"]],
-        y=[u["y"]],
-        mode='markers+text',
-        text=[u["id"]],
-        textposition="top center",
-        marker=dict(size=18, color=color),
-        showlegend=False
-    ))
+required_steel = 3
+available_steel = len(df[(df["metal"] == "Steel") & (df["status"] == "Stored")])
 
-# Draw path
-for i in range(len(path)-1):
-    fig.add_trace(go.Scatter(
-        x=[path[i]["x"], path[i+1]["x"]],
-        y=[path[i]["y"], path[i+1]["y"]],
-        mode='lines',
-        line=dict(color='blue', width=3),
-        showlegend=False
-    ))
+if available_steel < required_steel:
+    st.warning(f"Steel shortage detected: need {required_steel}, available {available_steel}")
+else:
+    st.success(f"Steel availability OK: need {required_steel}, available {available_steel}")
 
-fig.update_layout(
-    xaxis=dict(range=[-1, GRID_SIZE], dtick=1),
-    yaxis=dict(range=[-1, GRID_SIZE], dtick=1),
-    height=600
+st.divider()
+
+st.subheader("Shelf Map")
+
+shelf_display = []
+for shelf_name in shelf_coords.keys():
+    units_here = df[df["shelf"] == shelf_name]["unit_id"].tolist()
+    if len(units_here) == 0:
+        text = "Empty"
+    else:
+        text = ", ".join(units_here)
+    shelf_display.append({"Shelf": shelf_name, "Units": text})
+
+shelf_df = pd.DataFrame(shelf_display)
+st.dataframe(shelf_df, use_container_width=True)
+
+st.divider()
+
+st.subheader("Packing Path Demo")
+
+stored_df = df[df["status"] == "Stored"]
+
+selected_units = st.multiselect(
+    "Select units to pack",
+    stored_df["unit_id"].tolist()
 )
 
-st.plotly_chart(fig, use_container_width=True)
+def distance(p1, p2):
+    return math.dist(p1, p2)
 
-# ---------------------------
-# ALERTS
-# ---------------------------
-st.subheader("⚠️ System Alerts")
+if selected_units:
+    packing_station = (0, -1)
+    selected_shelves = []
 
-if duplicates:
-    st.error(f"Duplicate locations detected at: {duplicates}")
+    for uid in selected_units:
+        row = df[df["unit_id"] == uid].iloc[0]
+        selected_shelves.append((uid, row["shelf"], shelf_coords[row["shelf"]]))
 
-if missing_units:
-    st.warning(f"Missing units: {missing_units}")
+    remaining = selected_shelves.copy()
+    current = packing_station
+    route = []
+    total_distance = 0
 
-if not duplicates and not missing_units:
-    st.success("All systems normal")
+    while remaining:
+        next_stop = min(remaining, key=lambda x: distance(current, x[2]))
+        route.append(next_stop)
+        total_distance += distance(current, next_stop[2])
+        current = next_stop[2]
+        remaining.remove(next_stop)
 
-# ---------------------------
-# ORDER DISPLAY
-# ---------------------------
-st.subheader("📦 Current Order")
+    route_text = "Packing Station"
+    for stop in route:
+        route_text += f" → {stop[0]} ({stop[1]})"
 
-if st.session_state.order_units:
-    order_ids = [u["id"] for u in path]
-    st.write(" → ".join(order_ids))
+    st.write("Suggested route:")
+    st.info(route_text)
+    st.metric("Estimated Travel Distance", round(total_distance, 2))
+
+    carbon_factor = 0.05
+    estimated_carbon = total_distance * carbon_factor
+    st.metric("Estimated CO₂ Impact", round(estimated_carbon, 2))
 else:
-    st.write("No active order")
+    st.write("Select stored units to generate a route.")
