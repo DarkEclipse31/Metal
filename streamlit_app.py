@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import math
+import plotly.graph_objects as go
 
 st.set_page_config(
     page_title="Smart Metal Storage Dashboard",
@@ -27,10 +28,19 @@ if "event_log" not in st.session_state:
     ])
 
 shelf_coords = {
-    "A1": (0, 0), "A2": (0, 1), "A3": (0, 2),
-    "B1": (1, 0), "B2": (1, 1), "B3": (1, 2),
-    "C1": (2, 0), "C2": (2, 1), "C3": (2, 2),
+    "A1": (1, 7), "A2": (1, 5), "A3": (1, 3),
+    "B1": (4, 7), "B2": (4, 5), "B3": (4, 3),
+    "C1": (7, 7), "C2": (7, 5), "C3": (7, 3),
 }
+
+gateway_coords = {
+    "Gateway West": (0.3, 5),
+    "Gateway North": (4, 8.5),
+    "Gateway East": (8.7, 5),
+}
+
+packing_station = (9.2, 1.2)
+entry_door = (4.5, 0.3)
 
 order_requirements = {
     "O100": {"Steel": 1, "Copper": 1},
@@ -50,7 +60,7 @@ def update_unit(unit_id, metal, shelf, status, order_id="O999"):
 
     if unit_id in df["unit_id"].values:
         old_shelf = df.loc[df["unit_id"] == unit_id, "shelf"].values[0]
-        df.loc[df["unit_id"] == unit_id, ["metal", "shelf", "status"]] = [metal, shelf, status]
+        df.loc[df["unit_id"] == unit_id, ["metal", "shelf", "status", "order_id"]] = [metal, shelf, status, order_id]
     else:
         old_shelf = "-"
         new_row = pd.DataFrame([{
@@ -81,7 +91,6 @@ def distance(p1, p2):
     return math.dist(p1, p2)
 
 def build_route(selected_units, df):
-    packing_station = (0, -1)
     remaining = []
 
     for uid in selected_units:
@@ -138,6 +147,97 @@ def render_shelf_grid(df):
                 label = f"**{shelf}**\n\n" + "\n".join(unit_lines)
                 grid_cols[i].success(label)
 
+def draw_warehouse_map(df, selected_route_units=None):
+    fig = go.Figure()
+
+    # Room boundary
+    fig.add_shape(type="rect", x0=0, y0=0, x1=10, y1=9,
+                  line=dict(width=2), fillcolor="rgba(240,240,240,0.2)")
+
+    # Shelves
+    for shelf, (x, y) in shelf_coords.items():
+        fig.add_shape(
+            type="rect",
+            x0=x - 0.8, y0=y - 0.6,
+            x1=x + 0.8, y1=y + 0.6,
+            line=dict(width=2),
+            fillcolor="rgba(100,149,237,0.35)"
+        )
+
+        units_here = df[df["shelf"] == shelf]
+        if len(units_here) == 0:
+            label = f"{shelf}<br>Empty"
+        else:
+            label = f"{shelf}<br>" + "<br>".join(units_here["unit_id"].tolist())
+
+        fig.add_trace(go.Scatter(
+            x=[x], y=[y],
+            mode="text",
+            text=[label],
+            textposition="middle center",
+            showlegend=False,
+            hoverinfo="skip"
+        ))
+
+    # Gateways
+    for name, (x, y) in gateway_coords.items():
+        fig.add_trace(go.Scatter(
+            x=[x], y=[y],
+            mode="markers+text",
+            text=[name],
+            textposition="top center",
+            marker=dict(size=14, symbol="diamond"),
+            name=name
+        ))
+
+    # Packing station
+    fig.add_trace(go.Scatter(
+        x=[packing_station[0]], y=[packing_station[1]],
+        mode="markers+text",
+        text=["Packing Station"],
+        textposition="top center",
+        marker=dict(size=18, symbol="square"),
+        name="Packing Station"
+    ))
+
+    # Entry door
+    fig.add_trace(go.Scatter(
+        x=[entry_door[0]], y=[entry_door[1]],
+        mode="markers+text",
+        text=["Entry / Exit"],
+        textposition="top center",
+        marker=dict(size=14, symbol="circle"),
+        name="Entry / Exit"
+    ))
+
+    # Route
+    if selected_route_units:
+        route, total_distance = build_route(selected_route_units, df)
+        route_points_x = [packing_station[0]]
+        route_points_y = [packing_station[1]]
+
+        for stop in route:
+            route_points_x.append(stop[2][0])
+            route_points_y.append(stop[2][1])
+
+        fig.add_trace(go.Scatter(
+            x=route_points_x,
+            y=route_points_y,
+            mode="lines+markers",
+            name="Pick Route",
+            line=dict(width=4, dash="dash"),
+            marker=dict(size=10)
+        ))
+
+    fig.update_layout(
+        height=700,
+        xaxis=dict(range=[-0.5, 10.5], showgrid=False, zeroline=False, visible=False),
+        yaxis=dict(range=[-0.5, 9.5], showgrid=False, zeroline=False, visible=False, scaleanchor="x", scaleratio=1),
+        margin=dict(l=20, r=20, t=20, b=20)
+    )
+
+    return fig
+
 # -------------------------------------------------
 # Sidebar navigation
 # -------------------------------------------------
@@ -146,7 +246,7 @@ page = st.sidebar.radio(
     "Go to",
     [
         "Overview",
-        "Live Storage Map",
+        "2D Warehouse Map",
         "Unit Tracker",
         "Packing Route",
         "Alerts",
@@ -176,10 +276,10 @@ shortage_df = get_shortages(df)
 # Header
 # -------------------------------------------------
 st.title("Smart Metal Storage Dashboard")
-st.caption("IoT-inspired storage visibility, packing support, and simple sustainability tracking")
+st.caption("IoT-inspired storage visibility, route guidance, and simple sustainability tracking")
 
 # -------------------------------------------------
-# Overview page
+# Overview
 # -------------------------------------------------
 if page == "Overview":
     total_units = len(df)
@@ -193,41 +293,40 @@ if page == "Overview":
     c3.metric("Packed", packed_units)
     c4.metric("Missing", missing_units)
 
-    st.markdown("### What this system does")
-    st.write("""
-    This dashboard helps workers and supervisors:
-    - track where each metal unit is stored
-    - detect missing or misplaced units
-    - identify shortages for orders
-    - support faster packing with route suggestions
-    - estimate simple movement-based carbon impact
-    """)
-
-    st.markdown("### Quick View of Storage")
+    st.markdown("### Quick Storage View")
     render_shelf_grid(df)
 
-    st.markdown("### Recent Unit Activity")
+    st.markdown("### Recent Activity")
     if len(st.session_state.event_log) > 0:
-        st.dataframe(
-            st.session_state.event_log.tail(10).iloc[::-1],
-            use_container_width=True
-        )
+        st.dataframe(st.session_state.event_log.tail(10).iloc[::-1], use_container_width=True)
     else:
-        st.info("No updates yet. Use the sidebar to simulate a unit update.")
+        st.info("No updates yet.")
 
 # -------------------------------------------------
-# Live Storage Map
+# 2D Map
 # -------------------------------------------------
-elif page == "Live Storage Map":
-    st.subheader("Live Storage Map")
-    st.write("This view shows where units are currently located in the warehouse.")
-    render_shelf_grid(df)
+elif page == "2D Warehouse Map":
+    st.subheader("2D Warehouse Navigation Map")
+    st.write("This map shows shelf locations, gateways, packing station, and unit positions.")
 
-    st.markdown("### Current Storage Table")
-    st.dataframe(
-        df.sort_values(by=["shelf", "unit_id"]),
-        use_container_width=True
+    stored_df = df[df["status"] == "Stored"]
+    selected_route_units = st.multiselect(
+        "Select stored units to draw a picking route",
+        stored_df["unit_id"].tolist(),
+        key="map_route_units"
     )
+
+    fig = draw_warehouse_map(df, selected_route_units if selected_route_units else None)
+    st.plotly_chart(fig, use_container_width=True)
+
+    if selected_route_units:
+        route, total_distance = build_route(selected_route_units, df)
+        route_text = "Packing Station"
+        for stop in route:
+            route_text += f" → {stop[0]} ({stop[1]})"
+        st.success("Route generated")
+        st.write(route_text)
+        st.metric("Estimated Route Distance", round(total_distance, 2), "meters")
 
 # -------------------------------------------------
 # Unit Tracker
@@ -244,31 +343,28 @@ elif page == "Unit Tracker":
     st.dataframe(filtered_df, use_container_width=True)
 
     st.markdown("### View a Single Unit")
-    unit_options = df["unit_id"].tolist()
-    selected_unit = st.selectbox("Select Unit", unit_options)
-
+    selected_unit = st.selectbox("Select Unit", df["unit_id"].tolist())
     selected_row = df[df["unit_id"] == selected_unit].iloc[0]
 
-    col1, col2 = st.columns(2)
-    col1.write(f"**Unit ID:** {selected_row['unit_id']}")
-    col1.write(f"**Metal:** {selected_row['metal']}")
-    col1.write(f"**Shelf:** {selected_row['shelf']}")
-    col2.write(f"**Status:** {selected_row['status']}")
-    col2.write(f"**Order ID:** {selected_row['order_id']}")
+    c1, c2 = st.columns(2)
+    c1.write(f"**Unit ID:** {selected_row['unit_id']}")
+    c1.write(f"**Metal:** {selected_row['metal']}")
+    c1.write(f"**Shelf:** {selected_row['shelf']}")
+    c2.write(f"**Status:** {selected_row['status']}")
+    c2.write(f"**Order ID:** {selected_row['order_id']}")
 
-    st.markdown("### Unit Movement History")
     history = st.session_state.event_log[st.session_state.event_log["unit_id"] == selected_unit]
+    st.markdown("### Unit Movement History")
     if len(history) > 0:
         st.dataframe(history.iloc[::-1], use_container_width=True)
     else:
-        st.info("No movement history for this unit yet.")
+        st.info("No movement history yet.")
 
 # -------------------------------------------------
 # Packing Route
 # -------------------------------------------------
 elif page == "Packing Route":
     st.subheader("Packing Route Optimizer")
-    st.write("Choose stored units and the system suggests an easy picking order.")
 
     stored_df = df[df["status"] == "Stored"]
     selected_units = st.multiselect(
@@ -283,18 +379,19 @@ elif page == "Packing Route":
         for stop in route:
             route_text += f" → {stop[0]} ({stop[1]})"
 
-        st.success("Suggested route generated")
         st.write(route_text)
         st.metric("Estimated Travel Distance", round(total_distance, 2), "meters")
 
-        st.markdown("### Route Details")
         route_df = pd.DataFrame([
             {"Unit ID": stop[0], "Shelf": stop[1], "Coordinates": stop[2]}
             for stop in route
         ])
         st.dataframe(route_df, use_container_width=True)
+
+        fig = draw_warehouse_map(df, selected_units)
+        st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("Select at least one stored unit to calculate a route.")
+        st.info("Select at least one stored unit.")
 
 # -------------------------------------------------
 # Alerts
@@ -302,9 +399,9 @@ elif page == "Packing Route":
 elif page == "Alerts":
     st.subheader("System Alerts")
 
-    col1, col2 = st.columns(2)
+    c1, c2 = st.columns(2)
 
-    with col1:
+    with c1:
         st.markdown("### Missing Units")
         missing_df = df[df["status"] == "Missing"]
         if len(missing_df) > 0:
@@ -312,30 +409,22 @@ elif page == "Alerts":
         else:
             st.success("No missing units")
 
-    with col2:
+    with c2:
         st.markdown("### Order Shortages")
         if len(shortage_df) > 0:
             st.dataframe(shortage_df, use_container_width=True)
         else:
             st.success("No shortages detected")
 
-    st.markdown("### Packed Units")
-    packed_df = df[df["status"] == "Packed"]
-    if len(packed_df) > 0:
-        st.dataframe(packed_df, use_container_width=True)
-    else:
-        st.info("No packed units currently recorded")
-
 # -------------------------------------------------
 # Sustainability
 # -------------------------------------------------
 elif page == "Sustainability":
     st.subheader("Sustainability / Carbon Demo")
-    st.write("This is a simple demo panel showing estimated internal movement impact.")
 
     stored_df = df[df["status"] == "Stored"]
     selected_units = st.multiselect(
-        "Select units for carbon estimate",
+        "Select stored units for carbon estimate",
         stored_df["unit_id"].tolist(),
         key="carbon_units"
     )
@@ -349,6 +438,7 @@ elif page == "Sustainability":
         c1.metric("Estimated Travel Distance", round(total_distance, 2), "meters")
         c2.metric("Estimated CO₂ Impact", round(estimated_co2, 2), "kg CO₂")
 
-        st.info("This is a simple demo estimate based on travel distance only.")
+        fig = draw_warehouse_map(df, selected_units)
+        st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("Select stored units to estimate travel-based carbon impact.")
